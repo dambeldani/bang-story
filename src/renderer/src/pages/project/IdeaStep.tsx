@@ -12,6 +12,7 @@ import { geminiPreview } from '../../lib/voicePreviews'
 import { TTS_NAMES, ttsReadiness, usableTts } from '../../lib/keys'
 import { useApp } from '../../store/app'
 import { useProject } from '../../store/project'
+import { useMediaMode } from '../../lib/useMediaMode'
 import { ModelSection } from './ModelSection'
 
 /** One sample plays at a time, from the list rows or the button beside the picker. */
@@ -105,6 +106,7 @@ function VoicePicker({ provider, value, onChange }: { provider: TtsProvider; val
 export function IdeaStep() {
   const { project, clips, updateProject, flush, load } = useProject()
   const { toast, go } = useApp()
+  const mediaMode = useMediaMode()
   const [busy, setBusy] = useState(false)
   const [writer, setWriter] = useState<{ provider: LlmProvider; model: string } | null>(null)
   const [keys, setKeys] = useState<KeyStatus[]>([])
@@ -278,6 +280,7 @@ export function IdeaStep() {
               )}
             </div>
 
+            {mediaMode === 'higgsfield' && (
             <ModelSection
               project={project}
               clipCount={clipCount}
@@ -288,6 +291,7 @@ export function IdeaStep() {
                 if (!('videoResolution' in patch)) void window.api.settings.set(patch)
               }}
             />
+            )}
           </div>
 
           <aside className="flex flex-col gap-3.5 self-start rounded-[18px] border border-line bg-surface p-5">

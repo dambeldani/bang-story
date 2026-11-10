@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { RefreshCw, Sparkles, Trash2, UserPlus } from 'lucide-react'
 import { Button, Field, Modal, Progress, confirmDialog, cx, inputCls } from '../../components/ui'
 import { errorText } from '../../lib/format'
+import { useMediaMode } from '../../lib/useMediaMode'
 import { useApp } from '../../store/app'
 import { isRunning, jobFor, useProject } from '../../store/project'
+import { kindOfFile, ManualBar, useFileDrop, useManualMedia, usePasteImage } from './ManualMedia'
 
 /**
  * Edits a character, or with `characterId` "new" collects a new one that is only added once it is saved,
@@ -84,6 +86,13 @@ function EditCharacter({ characterId, onClose }: { characterId: string | null; o
   const { characters, assets, jobs, updateCharacter, removeCharacter, flush, clips } = useProject()
   const { toast } = useApp()
   const c = characters.find((x) => x.id === characterId)
+  const manual = useMediaMode() === 'manual'
+  const media = useManualMedia({ kind: 'sheet', id: c?.id ?? '' })
+  usePasteImage(media.loadFile, !!c)
+  const drop = useFileDrop((files) => {
+    const f = files.find((x) => kindOfFile(x) === 'image')
+    if (f) media.loadFile(f)
+  })
   if (!c) return null
   const sheet = c.sheetAssetId ? assets[c.sheetAssetId] : null
   const job = jobFor(jobs, 'sheet', { characterId: c.id })
@@ -113,15 +122,19 @@ function EditCharacter({ characterId, onClose }: { characterId: string | null; o
 
   return (
     <Modal open onClose={onClose} title="Lembar karakter" subtitle={`Dipakai di ${usedIn} klip sebagai referensi supaya tampilannya konsisten.`} width={760}>
-      <div className="relative aspect-video overflow-hidden rounded-xl border-[1.5px] border-ink bg-paper">
+      <div {...drop.props} className={cx('relative aspect-video overflow-hidden rounded-xl border-[1.5px] bg-paper', drop.over ? 'border-accent ring-4 ring-accent/30' : 'border-ink')}>
         {sheet ? (
           <img src={sheet.url} alt={`Lembar karakter ${c.name}`} className="size-full object-contain" />
         ) : running ? null : (
           <div className="flex size-full flex-col items-center justify-center gap-3 text-ink-2">
             <span className="text-sm">Belum ada lembar karakter</span>
-            <Button variant="accent" icon={<Sparkles className="size-4" />} disabled={running} onClick={() => void generate()}>
-              Buat lembar karakter
-            </Button>
+            {manual ? (
+              <span className="text-[13px]">Salin prompt di bawah, buat gambarnya di aplikasi lain, lalu muat, tempel (Ctrl+V), atau seret ke sini.</span>
+            ) : (
+              <Button variant="accent" icon={<Sparkles className="size-4" />} disabled={running} onClick={() => void generate()}>
+                Buat lembar karakter
+              </Button>
+            )}
           </div>
         )}
         {running && (
@@ -151,12 +164,13 @@ function EditCharacter({ characterId, onClose }: { characterId: string | null; o
           />
         </Field>
       </div>
+      <ManualBar target={{ kind: 'sheet', id: c.id }} media={media} />
       <div className="flex items-center gap-2.5">
         <Button variant="danger" icon={<Trash2 className="size-4" />} onClick={() => void remove()}>
           Hapus pemeran
         </Button>
         <div className="flex-1" />
-        {sheet && (
+        {sheet && !manual && (
           <Button icon={<RefreshCw className="size-4" />} loading={running} onClick={() => void generate()}>
             Buat ulang lembar
           </Button>

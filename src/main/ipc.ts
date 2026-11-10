@@ -8,6 +8,7 @@ import type {
   AspectRatio,
   ExportOptions,
   KeyTestResult,
+  ManualTarget,
   ModelSource,
   NewProjectInput,
   ProjectSnapshot,
@@ -53,6 +54,8 @@ import * as eleven from './services/elevenlabs'
 import * as gemini from './services/gemini'
 import * as hf from './services/higgsfield'
 import * as llm from './services/llm'
+import * as flowmcp from './services/flowmcp'
+import { importBytes, importDialog, importFolder, importPath, manualPrompt } from './manual'
 import { generateScript, generateVisuals, generateMusicPrompt } from './story'
 
 
@@ -128,6 +131,17 @@ export function registerIpc(): void {
     const fresh = getAsset(a.id)!
     emit.asset(fresh)
     return fresh
+  })
+  handle('flow:test', () => flowmcp.test())
+  handle('manual:prompt', (target: ManualTarget) => manualPrompt(target))
+  handle('manual:importDialog', (target: ManualTarget) => importDialog(target))
+  handle('manual:importPath', (target: ManualTarget, path: string) => importPath(target, String(path)))
+  handle('manual:importBytes', (target: ManualTarget, data: Uint8Array, ext: string) => importBytes(target, data, String(ext)))
+  handle('manual:importFolder', (projectId: string, kind: 'image' | 'video') => importFolder(projectId, kind === 'video' ? 'video' : 'image'))
+  handle('assets:reveal', (assetId: string) => {
+    const a = getAsset(assetId)
+    if (!a) throw new Error('Aset tidak ditemukan')
+    shell.showItemInFolder(assetAbsPath(a.projectId, a.localPath))
   })
   handle('assets:pickMusic', async (projectId: string) => {
     const win = BrowserWindow.getFocusedWindow()

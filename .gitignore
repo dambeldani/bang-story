@@ -10,3 +10,6 @@ dist
 .DS_Store
 .env
 .claude/settings.local.json
+
+# Cuplikan halaman Flow berisi nama dan email akun
+googleflow*.html

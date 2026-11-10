@@ -186,6 +186,8 @@ export function ScriptStep() {
 
   const insert = (afterId: string | null): void => setFocusId(addClip(afterId))
   const totalMs = clips.reduce((n, c) => n + c.durationMs, 0)
+  // Spoken words only, the same count each scene shows, so the footer total is the sum of those.
+  const totalWords = clips.reduce((n, c) => n + wordCount(c.narration), 0)
   const planned = clips.some((c) => c.visualPrompt.trim())
   const stale = clips.filter(needsVisual).length
   const target = DURATIONS.find((d) => d.sec === project.durationSec)?.label ?? `${project.durationSec} detik`
@@ -282,7 +284,7 @@ export function ScriptStep() {
       <footer className="absolute inset-x-0 bottom-0 flex h-[84px] items-center gap-3 border-t border-line bg-surface px-14">
         <div className="flex flex-col gap-0.5">
           <span className="text-[15px] font-semibold">
-            {clips.length} adegan · ± {mmss(totalMs)}
+            {clips.length} adegan · {totalWords.toLocaleString('id-ID')} kata · ± {mmss(totalMs)}
           </span>
           <span className="flex items-center gap-1.5 text-[13px] text-muted">
             <Bot className="size-3.5" />

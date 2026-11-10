@@ -28,8 +28,27 @@ export const LLM_PROVIDERS: { id: LlmProvider; name: string; note: string; link:
     note: 'Server apa pun yang kompatibel dengan OpenAI API, misalnya Ollama, LM Studio, vLLM, DeepSeek, atau xAI Grok.',
     link: null,
     linkLabel: ''
+  },
+  {
+    id: 'claude-cli',
+    name: 'Claude Code (lokal)',
+    note: 'Pakai Claude Code yang sudah terpasang dan login di komputermu. Tanpa API key.',
+    link: 'https://claude.com/claude-code',
+    linkLabel: 'Cara memasang Claude Code'
+  },
+  {
+    id: 'codex-cli',
+    name: 'Codex (lokal)',
+    note: 'Pakai Codex CLI yang sudah terpasang dan login di komputermu. Tanpa API key.',
+    link: 'https://github.com/openai/codex',
+    linkLabel: 'Cara memasang Codex'
   }
 ]
+
+/** Providers that run through a locally installed CLI: no API key, so they have no key form. */
+export function isCliProvider(id: LlmProvider): id is 'claude-cli' | 'codex-cli' {
+  return id === 'claude-cli' || id === 'codex-cli'
+}
 
 export function llmName(id: LlmProvider): string {
   return LLM_PROVIDERS.find((p) => p.id === id)?.name ?? id

@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Clapperboard,
   Film,
+  FolderOpen,
   Image as ImageIcon,
   MoreHorizontal,
   Move,
@@ -15,6 +16,7 @@ import {
   Plus,
   RefreshCw,
   Sparkles,
+  Upload,
   Trash2,
   Volume2
 } from 'lucide-react'
@@ -28,10 +30,12 @@ import { CharacterAvatar } from '../../components/CharacterAvatar'
 import { ClipVisual } from '../../components/ClipVisual'
 import { Badge, Button, Chip, IconButton, Menu, Progress, Segmented, confirmDialog, cx, inputCls } from '../../components/ui'
 import { clipNumber, errorText, mmss, secLabel } from '../../lib/format'
+import { useMediaMode } from '../../lib/useMediaMode'
 import { useNarration } from '../../lib/useNarration'
 import { useApp } from '../../store/app'
 import { isRunning, jobFor, useProject } from '../../store/project'
 import { CharacterModal } from './CharacterModal'
+import { kindOfFile, ManualBar, useFileDrop, useManualMedia, usePasteImage } from './ManualMedia'
 
 function useAudio(): { play: (url: string) => void; stop: () => void; playing: string | null } {
   const ref = useRef<HTMLAudioElement | null>(null)
@@ -107,6 +111,24 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
   const { toast } = useApp()
   const audio = useAudio()
   const [editPrompt, setEditPrompt] = useState(false)
+  const mode = useMediaMode()
+  const manual = mode === 'manual'
+  // Higgsfield and Google Flow make videos from the app; by hand the user loads them.
+  const hf = mode === 'higgsfield'
+  const flowMode = mode === 'flow'
+  const autoVideo = hf || flowMode
+  const fromText = clip.videoSource === 'text'
+  const imageMedia = useManualMedia({ kind: 'clip-image', id: clip.id })
+  const videoMedia = useManualMedia({ kind: 'clip-video', id: clip.id })
+  // A copied image (Ctrl+V) or a file dropped on the preview becomes this clip's picture or video.
+  usePasteImage(imageMedia.loadFile)
+  const drop = useFileDrop((files) => {
+    for (const f of files) {
+      const kind = kindOfFile(f)
+      if (kind === 'image') imageMedia.loadFile(f)
+      else if (kind === 'video') videoMedia.loadFile(f)
+    }
+  })
   if (!project) return null
 
   const image = clip.imageAssetId ? assets[clip.imageAssetId] : null
@@ -184,17 +206,26 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
 
       {/* The preview stays put while the settings below it scroll. */}
       <div className="shrink-0 border-b border-line px-5 pb-3.5 pt-4">
-        <div className={cx('relative overflow-hidden rounded-xl border-[1.5px] border-ink bg-paper', aspect)}>
+        <div {...drop.props} className={cx('relative overflow-hidden rounded-xl border-[1.5px] bg-paper', drop.over ? 'border-accent ring-4 ring-accent/30' : 'border-ink', aspect)}>
           {image && !isRunning(imageJob) && clip.motionType === 'camera' ? (
             <MotionPreview image={image} clip={clip} />
           ) : (
             <ClipVisual clip={clip} image={image} video={video} job={imageJob} large playVideo />
           )}
           {!image && !isRunning(imageJob) && (
-            <div className="absolute inset-x-0 bottom-6 flex justify-center">
-              <Button variant="accent" icon={<Sparkles className="size-4" />} onClick={() => void run(() => window.api.generate.clipImage(clip.id))}>
-                Generate gambar
-              </Button>
+            <div className="absolute inset-x-0 bottom-6 flex flex-col items-center gap-1.5">
+              {manual ? (
+                <>
+                  <Button variant="accent" icon={<Upload className="size-4" />} loading={imageMedia.busy === 'load'} onClick={() => void imageMedia.pick()}>
+                    Muat gambar
+                  </Button>
+                  <span className="rounded-full bg-surface/90 px-2.5 py-0.5 text-xs text-ink-2">atau tempel (Ctrl+V) atau seret file ke sini</span>
+                </>
+              ) : (
+                <Button variant="accent" icon={<Sparkles className="size-4" />} onClick={() => void run(() => window.api.generate.clipImage(clip.id))}>
+                  Generate gambar
+                </Button>
+              )}
             </div>
           )}
           {versions.length > 1 && (
@@ -223,7 +254,7 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
 
       <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
         <div className="flex flex-wrap gap-2">
-          {image && (
+          {image && !manual && (
             <Button
               size="sm"
               icon={<RefreshCw className="size-4" />}
@@ -237,6 +268,7 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
             {editPrompt ? 'Tutup prompt' : 'Edit prompt visual'}
           </Button>
         </div>
+        <ManualBar target={{ kind: 'clip-image', id: clip.id }} media={imageMedia} />
 
         {editPrompt && (
           <AutoTextarea
@@ -339,7 +371,7 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
             {(
               [
                 { id: 'camera', title: 'Gerak kamera', sub: 'Gratis · dirender di komputer', icon: <Move className="size-[22px]" />, subCls: 'text-ok-ink' },
-                { id: 'video', title: 'Video AI', sub: 'Higgsfield · pakai kredit', icon: <Film className="size-[22px]" />, subCls: 'text-ink-2' }
+                { id: 'video', title: 'Video AI', sub: hf ? 'Higgsfield · pakai kredit' : flowMode ? 'Google Flow · pakai kredit Flow' : 'Dibuat di aplikasi lain · dimuat sendiri', icon: <Film className="size-[22px]" />, subCls: 'text-ink-2' }
               ] as const
             ).map((o) => {
               const on = clip.motionType === o.id
@@ -393,7 +425,27 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
                   terakhir yang diam. Buat ulang video supaya pas.
                 </p>
               )}
-              {project && (
+              {flowMode && (
+                <div className="flex flex-col gap-1.5">
+                  <Segmented
+                    size="sm"
+                    value={clip.videoSource}
+                    onChange={(v) => updateClip(clip.id, { videoSource: v })}
+                    options={[
+                      { id: 'image', label: 'Dari gambar klip' },
+                      { id: 'text', label: 'Langsung dari teks' }
+                    ]}
+                    className="self-start"
+                  />
+                  <p className="text-xs text-ink-2">
+                    {fromText
+                      ? 'Video dibuat dari prompt saja, dengan lembar karakter sebagai referensi. Frame pertamanya jadi gambar klip kalau belum ada.'
+                      : 'Gambar klip dipakai sebagai frame pertama video. Tampilannya paling terkendali.'}{' '}
+                    Memakai kredit Flow.
+                  </p>
+                </div>
+              )}
+              {project && hf && (
                 <div className="flex items-center gap-1.5 text-xs text-ink-2">
                   <Film className="size-3.5 shrink-0" />
                   <span className="truncate">
@@ -418,18 +470,31 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
                 aria-label="Arahan gerak video"
                 className={cx(inputCls, 'py-2 text-[13px] leading-relaxed')}
               />
+              <ManualBar
+                target={{ kind: 'clip-video', id: clip.id }}
+                media={videoMedia}
+                extra={
+                  image && (
+                    <Button size="sm" icon={<FolderOpen className="size-4" />} onClick={() => void window.api.assets.reveal(image.id)}>
+                      Tampilkan gambar klip
+                    </Button>
+                  )
+                }
+              />
               <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant={video ? 'secondary' : 'accent'}
-                  icon={<Clapperboard className="size-4" />}
-                  loading={isRunning(videoJob)}
-                  disabled={!image}
-                  onClick={() => void run(() => window.api.generate.clipVideo(clip.id))}
-                >
-                  {video ? 'Buat ulang video' : 'Buat video'}
-                </Button>
-                {!image && <span className="text-xs text-muted">Buat gambar dulu, lalu jadikan video.</span>}
+                {autoVideo && (
+                  <Button
+                    size="sm"
+                    variant={video ? 'secondary' : 'accent'}
+                    icon={<Clapperboard className="size-4" />}
+                    loading={isRunning(videoJob)}
+                    disabled={!image && !(flowMode && fromText)}
+                    onClick={() => void run(() => window.api.generate.clipVideo(clip.id))}
+                  >
+                    {video ? 'Buat ulang video' : 'Buat video'}
+                  </Button>
+                )}
+                {!image && !(flowMode && fromText) && <span className="text-xs text-muted">{autoVideo ? 'Buat gambar dulu, lalu jadikan video.' : 'Buat atau muat gambar klip dulu.'}</span>}
                 {isRunning(videoJob) && (
                   <span className="text-xs text-sun-ink">
                     {videoJob!.message ?? 'Memproses'} {Math.round(videoJob!.progress * 100)}%
@@ -446,13 +511,21 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
 }
 
 export function StoryboardStep() {
-  const { project, clips, characters, assets, jobs, selectedClipId, select, addClip, updateProject, flush, load } = useProject()
+  const { project, clips, characters, assets, jobs, selectedClipId, select, addClip, updateClip, updateProject, flush, load } = useProject()
   const { toast } = useApp()
   /** A character id, "new" for an unsaved one, or null. */
   const [openChar, setOpenChar] = useState<string | null>(null)
   const [credits, setCredits] = useState<number | null>(null)
   const [videoCredits, setVideoCredits] = useState<number | null>(null)
   const [planning, setPlanning] = useState(false)
+  const mode = useMediaMode()
+  const manual = mode === 'manual'
+  const hf = mode === 'higgsfield'
+  const flowMode = mode === 'flow'
+  const [flowCfg, setFlowCfg] = useState<{ maxCredits: number; model: string } | null>(null)
+  useEffect(() => {
+    if (flowMode) void window.api.settings.get().then((s) => setFlowCfg({ maxCredits: s.flowMaxCredits, model: s.flowVideoModel }))
+  }, [flowMode])
   const lastNarration = useRef<string | null>(null)
 
   // A failed narration take is reported once, when it happens.
@@ -464,11 +537,11 @@ export function StoryboardStep() {
   }, [jobs])
 
   useEffect(() => {
-    if (project)
+    if (project && hf)
       void window.api.generate
         .estimate('image', getImageModel(project.imageModel).id, project.aspectRatio)
         .then((e) => setCredits(e?.credits ?? null))
-  }, [project?.id, project?.imageModel, project?.aspectRatio])
+  }, [project?.id, project?.imageModel, project?.aspectRatio, hf])
 
   const stats = useMemo(() => {
     const imgs = clips.filter((c) => c.imageAssetId).length
@@ -486,7 +559,7 @@ export function StoryboardStep() {
     return stats.needVideo.map((c) => fitDuration(model, c.durationMs / 1000) ?? 5).join(',')
   }, [stats.needVideo, project?.videoModel])
   useEffect(() => {
-    if (!project || !videoLengths) return setVideoCredits(null)
+    if (!project || !videoLengths || !hf) return setVideoCredits(null)
     const lengths = videoLengths.split(',').map(Number)
     const unique = [...new Set(lengths)]
     const model = getVideoModel(project.videoModel).id
@@ -500,7 +573,7 @@ export function StoryboardStep() {
     return () => {
       live = false
     }
-  }, [videoLengths, project?.aspectRatio, project?.videoResolution])
+  }, [videoLengths, project?.aspectRatio, project?.videoResolution, hf])
 
   if (!project) return null
   const selIndex = Math.max(0, clips.findIndex((c) => c.id === selectedClipId))
@@ -534,6 +607,35 @@ export function StoryboardStep() {
       confirm: `Buat ${n} video`
     })
     if (ok) await bulk(() => window.api.generate.missingVideos(project!.id))
+  }
+
+  // Google Flow videos: one by one through flow-mcp, each from the clip's own choice (picture or text).
+  const makeFlowVideos = async (): Promise<void> => {
+    const n = stats.needVideo.length
+    const fromText = stats.needVideo.filter((c) => c.videoSource === 'text').length
+    const cap = flowCfg?.maxCredits ?? 25
+    const ok = await confirmDialog({
+      title: `Buat ${n} video lewat Google Flow?`,
+      body:
+        `Video dibuat satu per satu dan memakai kredit Flow. Batas per video ${cap} kredit, jadi paling banyak ${n * cap} kredit. ` +
+        `${n - fromText} klip memakai gambarnya sebagai frame awal dan ${fromText} klip dibuat langsung dari teks. ` +
+        `flow-mcp dan jendela Chrome-nya harus tetap terbuka. Klip yang sudah punya video tidak dibuat ulang.`,
+      confirm: `Buat ${n} video`
+    })
+    if (ok) await bulk(() => window.api.generate.missingVideos(project!.id))
+  }
+
+  /** Loads a whole folder at once; scene numbers in the file names pick the clips. */
+  const loadFolder = async (kind: 'image' | 'video'): Promise<void> => {
+    try {
+      const r = await window.api.manual.importFolder(project.id, kind)
+      if (!r) return
+      const what = kind === 'video' ? 'video' : 'gambar'
+      if (!r.imported) toast('error', `Tidak ada ${what} yang cocok dengan klip. Beri nama file dengan nomor adegan, misalnya scene-03.`)
+      else toast('success', `${r.imported} ${what} dimuat.${r.skipped.length ? ` ${r.skipped.length} file dilewati: ${r.skipped.slice(0, 3).join(', ')}${r.skipped.length > 3 ? '…' : ''}` : ''}`)
+    } catch (e) {
+      toast('error', errorText(e))
+    }
   }
 
   // Scenes added or rewritten in the script since the last visual plan.
@@ -611,18 +713,64 @@ export function StoryboardStep() {
                 ? `Perbarui suara narasi (${narration.stale})`
                 : 'Rekam ulang suara narasi'}
         </Button>
-        <Button
-          className="border-[1.5px] border-ink font-semibold"
-          icon={<ImageIcon className="size-[17px]" />}
-          disabled={!stats.needImg}
-          onClick={() => void bulk(() => window.api.generate.missingImages(project.id))}
-        >
-          Generate {stats.needImg} gambar
-          {credits != null && stats.needImg > 0 && (
-            <span className="font-normal text-ink-2">≈ {Math.round(credits * stats.needImg * 10) / 10} kr</span>
-          )}
-        </Button>
-        {readyForVideo && (
+        {manual ? (
+          <>
+            <Button
+              className="border-[1.5px] border-ink font-semibold"
+              icon={<FolderOpen className="size-[17px]" />}
+              title="Pilih folder berisi gambar. Nama file memuat nomor adegan, misalnya scene-03.png untuk klip 3."
+              onClick={() => void loadFolder('image')}
+            >
+              Muat banyak gambar
+            </Button>
+            <Button icon={<FolderOpen className="size-[17px]" />} title="Sama seperti gambar, untuk video klip." onClick={() => void loadFolder('video')}>
+              Muat banyak video
+            </Button>
+          </>
+        ) : (
+          <Button
+            className="border-[1.5px] border-ink font-semibold"
+            icon={<ImageIcon className="size-[17px]" />}
+            disabled={!stats.needImg}
+            onClick={() => void bulk(() => window.api.generate.missingImages(project.id))}
+          >
+            Generate {stats.needImg} gambar
+            {credits != null && stats.needImg > 0 && (
+              <span className="font-normal text-ink-2">≈ {Math.round(credits * stats.needImg * 10) / 10} kr</span>
+            )}
+          </Button>
+        )}
+        {flowMode && (
+          <>
+            <Menu
+              trigger={(open) => (
+                <Button icon={<Film className="size-[17px]" />} title="Pilih dari apa semua video dibuat" onClick={open}>
+                  Sumber video
+                </Button>
+              )}
+              items={[
+                { label: 'Semua klip: dari gambar klip', run: () => clips.forEach((c) => updateClip(c.id, { videoSource: 'image' })) },
+                { label: 'Semua klip: langsung dari teks', run: () => clips.forEach((c) => updateClip(c.id, { videoSource: 'text' })) }
+              ]}
+            />
+            <Button
+              variant="primary"
+              icon={<Clapperboard className="size-[17px]" />}
+              loading={stats.videoRunning > 0}
+              disabled={stats.videoRunning > 0 || stats.needVideo.length === 0}
+              title="Setiap klip dibuat lewat Google Flow, dari gambarnya atau langsung dari teks sesuai pilihan klip itu."
+              onClick={() => void makeFlowVideos()}
+            >
+              {stats.videoRunning > 0 ? `Membuat ${stats.videoRunning} video` : stats.needVideo.length === 0 ? 'Semua klip sudah video' : `Buat ${stats.needVideo.length} video`}
+            </Button>
+          </>
+        )}
+        {flowMode && (
+          <Button icon={<FolderOpen className="size-[17px]" />} title="Pilih folder berisi video. Nama file memuat nomor adegan, misalnya scene-03.mp4." onClick={() => void loadFolder('video')}>
+            Muat banyak video
+          </Button>
+        )}
+        {readyForVideo && hf && (
           <Button
             variant="primary"
             icon={<Clapperboard className="size-[17px]" />}

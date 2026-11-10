@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, extname } from 'node:path'
 import { estimateWordTimings } from '@shared/captions'
 import { stripVoiceTags } from '@shared/speech'
-import { getImageModel, getVideoModel, imageBody, maxRefs, promptLimit, videoBody, type HfModel } from '@shared/higgsfield'
+import { NO_MUSIC, getImageModel, getVideoModel, imageBody, maxRefs, promptLimit, videoBody, type HfModel } from '@shared/higgsfield'
 import { getStyle } from '@shared/styles'
 import type { AspectRatio, Asset, Character, Clip, CreditEstimate, Job, Project, WordTiming } from '@shared/types'
 import { getDb } from './db'
@@ -29,9 +29,10 @@ import {
   updateJob
 } from './repo'
 import { dropCache, getSettings, readCache, writeCache } from './settings'
-import { probeDurationMs, probeSize } from './services/audio'
+import { grabFirstFrame, probeDurationMs, probeSize } from './services/audio'
 import * as eleven from './services/elevenlabs'
 import * as gemini from './services/gemini'
+import * as flow from './services/flowmcp'
 import * as hf from './services/higgsfield'
 import { downloadTo, sleep } from './services/http'
 
@@ -79,7 +80,7 @@ function characterLine(c: Character): string {
 }
 
 /** Splits the storyboard's "Avoid:" line off the scene, so it can be phrased as a clear instruction. */
-function splitAvoid(visual: string): { scene: string; avoid: string } {
+export function splitAvoid(visual: string): { scene: string; avoid: string } {
   const lines = visual.split('\n')
   const i = lines.findIndex((l) => /^\s*avoid\s*:/i.test(l))
   if (i < 0) return { scene: visual.trim(), avoid: '' }
@@ -93,7 +94,7 @@ function splitAvoid(visual: string): { scene: string; avoid: string } {
  * characters are, then the art style. Clothing follows the scene's Wardrobe line when it has one, so a
  * character can change out of the outfit on their reference sheet (no spacesuit indoors).
  */
-function clipPrompt(project: Project, clip: Clip, chars: Character[], refNames: string[], limit: number): string {
+export function clipPrompt(project: Project, clip: Clip, chars: Character[], refNames: string[], limit: number): string {
   const style = getStyle(project.styleId)
   const { scene, avoid } = splitAvoid(clip.visualPrompt)
   const wardrobe = /^\s*wardrobe\s*:/im.test(scene)
@@ -121,7 +122,7 @@ function clipPrompt(project: Project, clip: Clip, chars: Character[], refNames: 
   return [scene, chars.map(characterLine).join('; '), avoid && `Must not appear: ${avoid}.`, style.prompt].filter(Boolean).join('\n\n')
 }
 
-function sheetPrompt(project: Project, c: Character): string {
+export function sheetPrompt(project: Project, c: Character): string {
   const style = getStyle(project.styleId)
   return [
     style.prompt,
@@ -199,23 +200,31 @@ async function finishHiggsfield(ctx: TaskCtx, job: Job, requestId: string, paylo
     width: size?.width ?? null,
     height: size?.height ?? null
   })
-  emit.asset(asset)
-  if (payload.target === 'sheet' && job.characterId) {
-    setCharacterSheet(job.characterId, asset.id)
-    emit.character({ characterId: job.characterId, patch: { sheetAssetId: asset.id } })
-  } else if (payload.target === 'clip-image' && job.clipId) {
-    patchClip(job.clipId, { imageAssetId: asset.id })
-    emit.clip({ clipId: job.clipId, patch: { imageAssetId: asset.id } })
-    const project = getProject(job.projectId)
-    const first = clipsOf(job.projectId)[0]
-    if (!project.coverAssetId || first?.id === job.clipId) touchProject(job.projectId, { coverAssetId: asset.id })
-  } else if (payload.target === 'clip-video' && job.clipId) {
-    const patch = { videoAssetId: asset.id, motionType: 'video' as const, mediaInMs: 0 }
-    patchClip(job.clipId, patch)
-    emit.clip({ clipId: job.clipId, patch })
-  }
-  touchProject(job.projectId)
+  linkAsset(payload.target, asset)
   return asset.id
+}
+
+/**
+ * Makes a stored asset the character sheet, picture or video of its owner. Shared by Higgsfield results and
+ * files the user loads by hand, so both end up in exactly the same state.
+ */
+export function linkAsset(target: HfPayload['target'], asset: Asset): void {
+  emit.asset(asset)
+  if (target === 'sheet' && asset.characterId) {
+    setCharacterSheet(asset.characterId, asset.id)
+    emit.character({ characterId: asset.characterId, patch: { sheetAssetId: asset.id } })
+  } else if (target === 'clip-image' && asset.clipId) {
+    patchClip(asset.clipId, { imageAssetId: asset.id })
+    emit.clip({ clipId: asset.clipId, patch: { imageAssetId: asset.id } })
+    const project = getProject(asset.projectId)
+    const first = clipsOf(asset.projectId)[0]
+    if (!project.coverAssetId || first?.id === asset.clipId) touchProject(asset.projectId, { coverAssetId: asset.id })
+  } else if (target === 'clip-video' && asset.clipId) {
+    const patch = { videoAssetId: asset.id, motionType: 'video' as const, mediaInMs: 0 }
+    patchClip(asset.clipId, patch)
+    emit.clip({ clipId: asset.clipId, patch })
+  }
+  touchProject(asset.projectId)
 }
 
 function startHiggsfield(job: Job, build: (ctx: TaskCtx) => Promise<{ endpoint: string; body: Record<string, unknown>; payload: HfPayload }>): Job {
@@ -231,6 +240,49 @@ function startHiggsfield(job: Job, build: (ctx: TaskCtx) => Promise<{ endpoint: 
   })
 }
 
+/**
+ * Runs one picture through Flow (flow-mcp). Same result as Higgsfield: the file becomes an asset of the clip or
+ * character. A restart cannot pick the request up again (see resumeJobs), so a half-done job is simply retried.
+ */
+function startFlow(
+  job: Job,
+  build: (ctx: TaskCtx) => Promise<{ target: 'clip-image' | 'sheet'; prompt: string; aspect: AspectRatio; refs: string[] }>
+): Job {
+  emit.job(job)
+  return runJob(job, 'flow', async (ctx) => {
+    ctx.progress(0.04, 'Menyiapkan prompt')
+    const { target, prompt, aspect, refs } = await build(ctx)
+    updateJobPayload(job.id, { target, model: 'flow', prompt })
+    ctx.progress(0.08, 'Mengirim ke Flow')
+    const file = await flow.makeImage({
+      prompt,
+      aspect,
+      refs,
+      signal: ctx.signal,
+      onJob: (id) => ctx.setRemote(id),
+      onStatus: (status, elapsed) =>
+        status === 'queued' ? ctx.progress(0.12, 'Mengantre di Flow') : ctx.progress(0.15 + 0.75 * (1 - Math.exp(-elapsed / 90_000)), 'Flow sedang membuat gambar')
+    })
+    ctx.progress(0.93, 'Menyimpan hasil')
+    const rel = saveFile(job.projectId, 'images', extname(file).toLowerCase().replace('.jpeg', '.jpg') || '.png', readFileSync(file))
+    const size = await probeSize(assetAbsPath(job.projectId, rel))
+    const asset = insertAsset({
+      projectId: job.projectId,
+      clipId: job.clipId,
+      characterId: job.characterId,
+      kind: 'image',
+      provider: 'flow',
+      model: 'flow-mcp',
+      prompt,
+      localPath: rel,
+      width: size?.width ?? null,
+      height: size?.height ?? null
+    })
+    linkAsset(target, asset)
+    return asset.id
+  })
+}
+
 function updateJobPayload(jobId: string, payload: HfPayload): void {
   getDb().prepare('UPDATE jobs SET payload_json = ? WHERE id = ?').run(JSON.stringify(payload), jobId)
 }
@@ -241,6 +293,25 @@ export function generateClipImage(clipId: string): Job {
   const existing = activeJobFor({ clipId }, 'image')
   if (existing) return existing
   const clip = getClip(clipId)
+  if (getSettings().mediaMode === 'flow') {
+    const flowJob = insertJob({ projectId: clip.projectId, clipId, kind: 'image', provider: 'flow' })
+    return startFlow(flowJob, async (ctx) => {
+      const fresh = getClip(clipId)
+      const project = getProject(fresh.projectId)
+      const chars = charactersOf(project.id).filter((c) => fresh.characterIds.includes(c.id))
+      // Sheets still being made are awaited, so the picture is made with them as references.
+      await waitForSheets(chars.map((c) => c.id), ctx.signal)
+      const refs: string[] = []
+      const names: string[] = []
+      for (const c of chars) {
+        const sheet = getAsset(getCharacter(c.id).sheetAssetId)
+        if (!sheet || refs.length >= 3) continue
+        refs.push(assetAbsPath(sheet.projectId, sheet.localPath))
+        names.push(c.name)
+      }
+      return { target: 'clip-image', prompt: clipPrompt(project, fresh, chars, names, Infinity), aspect: project.aspectRatio, refs }
+    })
+  }
   const job = insertJob({ projectId: clip.projectId, clipId, kind: 'image', provider: 'higgsfield' })
   return startHiggsfield(job, async (ctx) => {
     const fresh = getClip(clipId)
@@ -261,6 +332,15 @@ export function generateCharacterSheet(characterId: string): Job {
   const existing = activeJobFor({ characterId }, 'sheet')
   if (existing) return existing
   const c = getCharacter(characterId)
+  if (getSettings().mediaMode === 'flow') {
+    const flowJob = insertJob({ projectId: c.projectId, characterId, kind: 'sheet', provider: 'flow' })
+    return startFlow(flowJob, async () => ({
+      target: 'sheet',
+      prompt: sheetPrompt(getProject(c.projectId), getCharacter(characterId)),
+      aspect: '16:9',
+      refs: []
+    }))
+  }
   const job = insertJob({ projectId: c.projectId, characterId, kind: 'sheet', provider: 'higgsfield' })
   return startHiggsfield(job, async () => {
     const project = getProject(c.projectId)
@@ -274,10 +354,111 @@ export function generateCharacterSheet(characterId: string): Job {
   })
 }
 
+/** The clip's own motion direction, or a gentle default built from its scene. */
+export function defaultVideoPrompt(clip: Clip): string {
+  return (
+    clip.videoPrompt.trim() ||
+    `${splitAvoid(clip.visualPrompt).scene.replace(/\.$/, '')}. Subtle natural motion of the characters and environment, the camera slowly pushes in. Keep the art style of the first frame.`
+  )
+}
+
+/** Omni models take 4, 6, 8 or 10 s; Veo clips are fixed at 8 s and take no length. */
+function flowVideoDuration(model: string, seconds: number): number | undefined {
+  if (!/omni/i.test(model)) return undefined
+  return [4, 6, 8, 10].find((d) => d >= seconds) ?? 10
+}
+
+/**
+ * A video made by Google Flow (flow-mcp). Either from the clip's picture as its first frame, or from the text alone
+ * with the character sheets as references. A clip made from text gets its first frame as its picture, so the
+ * storyboard, cover and preview are never empty.
+ */
+function generateFlowVideo(clip: Clip): Job {
+  const source = clip.videoSource === 'text' ? 'text' : 'image'
+  if (source === 'image' && !clip.imageAssetId)
+    throw new Error('Klip ini memakai gambarnya sebagai frame awal video. Buat atau muat gambarnya dulu, atau pilih "Langsung dari teks".')
+  const job = insertJob({ projectId: clip.projectId, clipId: clip.id, kind: 'video', provider: 'flow' })
+  emit.job(job)
+  return runJob(job, 'flow', async (ctx) => {
+    const fresh = getClip(clip.id)
+    const project = getProject(fresh.projectId)
+    const settings = getSettings()
+    ctx.progress(0.04, 'Menyiapkan prompt')
+    let prompt: string
+    let firstFrame: string | undefined
+    const refs: string[] = []
+    if (source === 'image') {
+      const image = getAsset(fresh.imageAssetId)
+      if (!image) throw new Error('Gambar klip tidak ditemukan')
+      firstFrame = assetAbsPath(image.projectId, image.localPath)
+      prompt = `${defaultVideoPrompt(fresh)} ${NO_MUSIC}`
+    } else {
+      const chars = charactersOf(project.id).filter((c) => fresh.characterIds.includes(c.id))
+      await waitForSheets(chars.map((c) => c.id), ctx.signal)
+      const names: string[] = []
+      for (const c of chars) {
+        const sheet = getAsset(getCharacter(c.id).sheetAssetId)
+        if (!sheet || refs.length >= 3) continue
+        refs.push(assetAbsPath(sheet.projectId, sheet.localPath))
+        names.push(c.name)
+      }
+      const motion = fresh.videoPrompt.trim() || 'Subtle natural motion of the characters and environment, the camera slowly pushes in.'
+      prompt = `${clipPrompt(project, fresh, chars, names, Infinity)}\n\nMotion: ${motion}\n\n${NO_MUSIC}`
+    }
+    updateJobPayload(job.id, { target: 'clip-video', model: 'flow', prompt })
+    ctx.progress(0.08, 'Mengirim ke Flow')
+    const model = settings.flowVideoModel.trim()
+    const file = await flow.makeVideo({
+      prompt,
+      aspect: project.aspectRatio,
+      firstFrame,
+      refs,
+      model: model || undefined,
+      durationSec: flowVideoDuration(model, fresh.durationMs / 1000),
+      maxCredits: settings.flowMaxCredits,
+      signal: ctx.signal,
+      onJob: (id) => ctx.setRemote(id),
+      onStatus: (status, elapsed) =>
+        status === 'queued' ? ctx.progress(0.12, 'Mengantre di Flow') : ctx.progress(0.15 + 0.75 * (1 - Math.exp(-elapsed / 240_000)), 'Flow sedang membuat video')
+    })
+    ctx.progress(0.93, 'Menyimpan hasil')
+    const rel = saveFile(project.id, 'videos', extname(file).toLowerCase() || '.mp4', readFileSync(file))
+    const abs = assetAbsPath(project.id, rel)
+    const size = await probeSize(abs)
+    const durationMs = await probeDurationMs(abs).catch(() => null)
+    const asset = insertAsset({
+      projectId: project.id,
+      clipId: clip.id,
+      kind: 'video',
+      provider: 'flow',
+      model: model || 'flow-mcp',
+      prompt,
+      localPath: rel,
+      durationMs,
+      width: size?.width ?? null,
+      height: size?.height ?? null
+    })
+    if (source === 'text' && !getClip(clip.id).imageAssetId) {
+      const frameRel = `images/${randomUUID()}.png`
+      const frameAbs = assetAbsPath(project.id, frameRel)
+      mkdirSync(dirname(frameAbs), { recursive: true })
+      await grabFirstFrame(abs, frameAbs)
+      const fsize = await probeSize(frameAbs)
+      linkAsset(
+        'clip-image',
+        insertAsset({ projectId: project.id, clipId: clip.id, kind: 'image', provider: 'flow', model: 'flow-mcp', prompt, localPath: frameRel, width: fsize?.width ?? null, height: fsize?.height ?? null })
+      )
+    }
+    linkAsset('clip-video', asset)
+    return asset.id
+  })
+}
+
 export function generateClipVideo(clipId: string): Job {
   const existing = activeJobFor({ clipId }, 'video')
   if (existing) return existing
   const clip = getClip(clipId)
+  if (getSettings().mediaMode === 'flow') return generateFlowVideo(clip)
   if (!clip.imageAssetId) throw new Error('Buat gambar klip ini dulu sebelum membuat video AI.')
   const job = insertJob({ projectId: clip.projectId, clipId, kind: 'video', provider: 'higgsfield' })
   return startHiggsfield(job, async (ctx) => {
@@ -288,9 +469,7 @@ export function generateClipVideo(clipId: string): Job {
     const model = getVideoModel(project.videoModel)
     ctx.progress(0.05, 'Menyiapkan gambar awal')
     const url = await publicUrlFor(image, ctx.signal)
-    let prompt =
-      fresh.videoPrompt.trim() ||
-      `${splitAvoid(fresh.visualPrompt).scene.replace(/\.$/, '')}. Subtle natural motion of the characters and environment, the camera slowly pushes in. Keep the art style of the first frame.`
+    let prompt = defaultVideoPrompt(fresh)
     if (model.input.mode === 'reference')
       prompt = `Open on the exact scene of the reference image and keep its art style, characters and composition. ${prompt}`
     return {
@@ -373,6 +552,14 @@ export function generateMissingImages(projectId: string): Job[] {
 /** Turns every clip that has an image but no AI video yet into a video. */
 export function generateMissingVideos(projectId: string): Job[] {
   const clips = clipsOf(projectId)
+  if (getSettings().mediaMode === 'flow') {
+    // Clips made from text need no picture; the others use theirs as the first frame.
+    const todo = clips.filter((c) => !c.videoAssetId)
+    const blocked = clips.flatMap((c, i) => (!c.videoAssetId && c.videoSource !== 'text' && !c.imageAssetId ? [String(i + 1).padStart(2, '0')] : []))
+    if (blocked.length)
+      throw new Error(`Klip ${blocked.join(', ')} memakai gambar sebagai frame awal tapi belum punya gambar. Buat gambarnya dulu, atau pilih "Langsung dari teks" untuk klip itu.`)
+    return todo.map((c) => generateClipVideo(c.id))
+  }
   if (clips.some((c) => !c.imageAssetId)) throw new Error('Buat gambar semua klip dulu sebelum menjadikannya video.')
   return clips.filter((c) => !c.videoAssetId).map((c) => generateClipVideo(c.id))
 }

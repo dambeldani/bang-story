@@ -33,6 +33,7 @@ dalam transaksi, lalu `user_version` dinaikkan.
 | 5 | `projects.video_resolution` |
 | 6 | `clips.video_camera`, `video_strength`, `transition_ms`, `voice_gain_db` |
 | 7 | `clips.media_in_ms`, `voice_in_ms`, `voice_out_ms`, `voice_start_ms` |
+| 8 | `clips.video_source` (`image` atau `text`: dari apa video Google Flow dibuat) |
 
 **Aturan:** tambahkan migrasi baru di akhir. Jangan mengubah migrasi yang sudah ada, karena pengguna lama sudah
 menjalankannya.
@@ -65,6 +66,7 @@ Satu klip = satu adegan: gambar atau video, suara narasinya, dan geraknya.
 | `motionType` | `camera` (gerak kamera di atas gambar) atau `video` (video AI) |
 | `cameraPreset`, `motionStrength` | gerak kamera untuk gambar: zoomin/zoomout/panleft/panright/kenburns/shake/static; halus/sedang/kuat |
 | `videoPrompt` | arahan gerak untuk video AI |
+| `videoSource` | `image` (gambar klip jadi frame awal) atau `text` (video langsung dari prompt); dipakai mode Google Flow |
 | `videoCamera`, `videoStrength` | gerak kamera tambahan di atas video AI (`static` = tanpa gerak) |
 | `transition`, `transitionMs` | transisi ke klip berikutnya (`fade`/`slideleft`/`zoomin`/`cut`) dan durasinya (null = 0,4 dtk) |
 | `voiceGainDb` | volume suara klip ini (dB) |

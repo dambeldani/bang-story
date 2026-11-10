@@ -96,3 +96,4 @@ docs/              dokumentasi pengembang
 | Gaya kode dan aturan UI | [docs/konvensi.md](docs/konvensi.md) |
 | Keputusan teknis dan alasannya | [docs/keputusan-teknis.md](docs/keputusan-teknis.md) |
 | Masalah yang diketahui dan ide lanjutan | [docs/masalah-diketahui.md](docs/masalah-diketahui.md) |
+| Fork, remote, dan menarik pembaruan dari repo asli | [docs/git-fork.md](docs/git-fork.md) |

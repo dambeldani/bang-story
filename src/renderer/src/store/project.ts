@@ -129,6 +129,7 @@ export const useProject = create<ProjectState>((set, get) => {
         cameraPreset: 'zoomin',
         motionStrength: 'halus',
         videoPrompt: '',
+        videoSource: 'image',
         transition: 'fade',
         videoCamera: 'static',
         videoStrength: 'halus',

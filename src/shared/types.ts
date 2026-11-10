@@ -1,8 +1,8 @@
 export type ProjectStatus = 'draft' | 'script' | 'storyboard' | 'editing' | 'exported'
 export type AspectRatio = '16:9' | '9:16'
 export type TtsProvider = 'gemini' | 'elevenlabs'
-export type LlmProvider = 'gemini' | 'openrouter' | 'groq' | 'custom'
-export type ApiProvider = 'higgsfield' | 'gemini' | 'elevenlabs' | 'openrouter' | 'groq' | 'custom'
+export type LlmProvider = 'gemini' | 'openrouter' | 'groq' | 'custom' | 'claude-cli' | 'codex-cli'
+export type ApiProvider = 'higgsfield' | 'gemini' | 'elevenlabs' | 'openrouter' | 'groq' | 'custom' | 'claude-cli' | 'codex-cli'
 /** Where a live model list comes from: an LLM provider, or a TTS catalog. */
 export type ModelSource = LlmProvider | 'gemini-tts' | 'elevenlabs'
 export type MotionType = 'camera' | 'video'
@@ -141,6 +141,8 @@ export interface Clip {
   cameraPreset: CameraPresetId
   motionStrength: MotionStrength
   videoPrompt: string
+  /** What an AI video is made from: the clip's picture as its first frame, or the text alone. */
+  videoSource: VideoSource
   transition: TransitionId
   /** Camera move drawn over the AI video ('static' keeps the video as it is). */
   videoCamera: CameraPresetId
@@ -292,6 +294,36 @@ export interface AppSettings {
   videoModel: string
   /** Time captions against the real voice with Whisper after narration is made (when the model is present). */
   whisperAuto: boolean
+  /** Google Flow video: the model label as Flow shows it (empty: whatever Flow has selected) and the most credits one video may cost. */
+  flowVideoModel: string
+  flowMaxCredits: number
+  /** Who makes pictures and videos: Higgsfield through its API, Google Flow through flow-mcp, or the user in any other app (loaded by hand). */
+  mediaMode: MediaMode
+}
+
+export type VideoSource = 'image' | 'text'
+
+export type MediaMode = 'higgsfield' | 'flow' | 'manual'
+
+/** What the user makes by hand in another app, and what it becomes in the storyboard. */
+export interface ManualTarget {
+  kind: 'clip-image' | 'clip-video' | 'sheet'
+  /** A clip id, or a character id for a sheet. */
+  id: string
+}
+
+/** A prompt to paste into another app, with what the user should attach or know before pasting. */
+export interface ManualPrompt {
+  prompt: string
+  /** Names of the character sheets to attach, in the order the prompt refers to them. */
+  attach: string[]
+  hint: string
+}
+
+export interface BatchImportResult {
+  imported: number
+  /** File names that matched no clip. */
+  skipped: string[]
 }
 
 /** What one Higgsfield request would cost, from the API's estimate endpoint. */

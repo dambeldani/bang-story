@@ -17,8 +17,14 @@ async function el<T>(path: string, init: RequestInit & { key?: string } = {}): P
   })
   if (!res.ok) {
     const detail = await readError(res)
+    // ElevenLabs answers a plan restriction with 402 and a real quota overrun with 401, so the text decides, not the
+    // status. Calling every 402 "quota used up" sent a free-plan user hunting for credits they still had.
+    if (/paid_plan_required|library voice|paid plan|upgrade/i.test(detail))
+      throw new Error(`ElevenLabs menolak suara ini di paketmu: ${detail} Pilih suara lain (suara bawaan, bukan dari Voice Library) atau pakai paket berbayar.`)
+    if (/quota_exceeded|exceeds your quota|credits? (are )?required|credits? remaining/i.test(detail))
+      throw new Error(`Kuota karakter ElevenLabs tidak cukup untuk permintaan ini: ${detail}`)
     if (res.status === 401) throw new Error('Kunci ElevenLabs tidak valid atau tidak punya izin ini.')
-    if (res.status === 402 || /quota|credits/i.test(detail)) throw new Error('Kuota karakter ElevenLabs habis.')
+    if (res.status === 402) throw new Error(`ElevenLabs menolak permintaan (402): ${detail}`)
     if (res.status === 404) throw new Error('Suara ElevenLabs tidak ditemukan. Pilih suara lain.')
     if (res.status === 429) throw new Error('ElevenLabs sedang sibuk. Coba lagi sebentar.')
     throw new Error(`ElevenLabs gagal: ${detail}`)
@@ -39,7 +45,7 @@ export async function testKey(key?: string): Promise<KeyTestResult> {
 }
 
 export async function listVoices(): Promise<VoiceOption[]> {
-  const out: VoiceOption[] = []
+  const out: (VoiceOption & { premade: boolean })[] = []
   let token: string | undefined
   for (let page = 0; page < 5; page++) {
     const q = new URLSearchParams({ page_size: '100', include_total_count: 'false' })
@@ -51,12 +57,16 @@ export async function listVoices(): Promise<VoiceOption[]> {
     }>(`/v2/voices?${q}`)
     for (const v of r.voices) {
       const labels = Object.values(v.labels ?? {}).filter(Boolean).slice(0, 3).join(', ')
-      out.push({ id: v.voice_id, name: v.name, description: labels || v.category || '', previewUrl: v.preview_url ?? null })
+      out.push({ id: v.voice_id, name: v.name, description: labels || v.category || '', previewUrl: v.preview_url ?? null, premade: v.category === 'premade' })
     }
     if (!r.has_more || !r.next_page_token) break
     token = r.next_page_token
   }
-  return out
+  // Free plans may not use Voice Library voices through the API (it answers 402 and the narration fails), so those
+  // are left out of the picker. If the plan cannot be read, or nothing premade is left, everything is shown.
+  const tier = await el<{ tier?: string }>('/v1/user/subscription').then((x) => x.tier, () => undefined)
+  const usable = tier === 'free' ? out.filter((v) => v.premade) : out
+  return (usable.length ? usable : out).map(({ premade: _premade, ...v }) => v)
 }
 
 /** Live list of ElevenLabs models that can do text-to-speech. */

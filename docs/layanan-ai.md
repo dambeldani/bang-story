@@ -22,6 +22,7 @@ Pengguna memasukkan kuncinya sendiri di **Pengaturan › Layanan AI dan kunci**.
 | `gemini` | LLM (naskah/visual) dan Gemini TTS |
 | `elevenlabs` | TTS |
 | `openrouter`, `groq`, `custom` | LLM lewat API kompatibel OpenAI |
+| `claude-cli`, `codex-cli` | LLM lewat CLI lokal (`services/cli.ts`): tanpa API key, memakai login Claude Code / Codex di komputer pengguna |
 
 ## LLM (`services/llm.ts`, `services/gemini.ts`)
 
@@ -31,6 +32,11 @@ Pengguna memasukkan kuncinya sendiri di **Pengaturan › Layanan AI dan kunci**.
   - Lainnya: `/chat/completions`, dicoba berurutan `json_schema` (strict) → `json_object` → teks biasa, lalu JSON
     diambil dari teks (`extractJson`) untuk model yang tidak mendukung structured output.
 - `listModels(source)`: daftar model live dari penyedia, dicache di tabel `cache` dan disegarkan saat basi.
+- **CLI lokal** (`services/cli.ts`): `findCli` mencari binary di PATH, folder instalasi umum, nvm, dan ekstensi VS Code
+  (aplikasi GUI tidak mewarisi PATH terminal). Prompt dikirim lewat stdin, jalan di folder sementara kosong tanpa tool.
+  Claude: `claude -p --output-format json --json-schema` (hasil di `structured_output`). Codex: `codex exec --output-schema -o`.
+  Daftar model Codex dari `codex debug models`; model bawaan konfigurasi Codex sering tidak boleh dipakai akun ChatGPT,
+  jadi Codex selalu diberi model eksplisit. Status "terhubung" = terpasang + tes panggilan kecil berhasil.
 - **Menambah penyedia LLM baru** yang kompatibel OpenAI: tambahkan ke `LlmProvider` dan `ApiProvider`
   (`types.ts`), `LLM_PROVIDERS` (`shared/models.ts`), konfigurasi base URL di `llm.ts`, dan `DEFAULT_SETTINGS.llmModels`.
 
@@ -53,6 +59,47 @@ Narasi selalu dibuat satu rekaman utuh lalu dipotong. Lihat [alur-produksi.md](a
   biaya per model selalu diambil dari sini.
 - Pesan error dibuat ramah (`friendly`): kunci salah, kredit habis, terlalu banyak proses, model tidak tersedia.
 - Untuk pengembangan, `STUDIO_HF_BASE` bisa diarahkan ke server tiruan (mock) supaya UI bisa diuji tanpa kredit.
+
+### Mode Google Flow (`src/main/services/flowmcp.ts`)
+
+`settings.mediaMode = 'flow'` membuat gambar klip dan lembar karakter lewat [flow-mcp](https://github.com/GTAI-1/flow-mcp)
+(lisensi ISC di `package.json`-nya), program terpisah yang dipasang dan di-login sendiri oleh pengguna. Bang Story tidak
+membundelnya dan tidak pernah memegang kata sandi atau cookie Google.
+
+- flow-mcp mengendalikan Chrome yang login ke Flow dan membuka API HTTP lokal di `127.0.0.1:8787`
+  (`POST /api/<metode>`, header `x-flow-token`). Token ditulis flow-mcp ke `~/.flow-mcp/token` dan berubah tiap ia
+  dijalankan, jadi dibaca ulang di setiap panggilan.
+- `makeImage`: `generate` (satu scene `type: image`, `reference_images` = lembar karakter, maksimal 3,
+  `max_credits: 0` supaya tidak ada kredit yang terpakai) → `wait` berulang → file hasil di `job.files`.
+- `startFlow` di `generation.ts` menyalin file itu ke folder proyek dan menautkannya lewat `linkAsset`
+  (`provider: 'flow'`). Antrean `flow` di `jobs.ts`; job Flow tidak bisa dilanjutkan setelah aplikasi ditutup
+  (`resumeJobs` menandainya gagal).
+- flow-mcp membuat satu gambar per waktu dengan jeda 25-70 detik, jadi banyak klip butuh waktu.
+- **Video** (`makeVideo`, `generateFlowVideo` di `generation.ts`): tiap klip punya `videoSource`.
+  `image` memakai gambar klip sebagai `first_frame`; `text` memakai prompt adegan + arahan gerak dan lembar karakter
+  sebagai `reference_images` (Flow menerima frame ATAU referensi, tidak keduanya). Klip dari teks yang belum punya
+  gambar mendapat frame pertama videonya (`grabFirstFrame`, FFmpeg) sebagai gambar klip. Pengaturan: `flowVideoModel`
+  (label model seperti di Flow; kosong = model Flow saat ini) dan `flowMaxCredits` (batas per video, dikirim sebagai
+  `max_credits`). Durasi hanya dikirim untuk model Omni (4/6/8/10 detik, dibulatkan ke atas); Veo tetap 8 detik.
+  `generateMissingVideos` menolak klip bersumber gambar yang belum punya gambar dan menyebut nomornya.
+- Pengembangan tanpa akun Flow: `STUDIO_FLOW_BASE` dan `STUDIO_FLOW_TOKEN` mengarahkan ke server tiruan.
+- Risiko: mengotomatiskan antarmuka web Flow bisa rusak kalau Google mengubahnya dan mungkin melanggar ketentuan layanan
+  Google; penulis flow-mcp memperingatkan hal yang sama.
+
+### Mode manual (`src/main/manual.ts`)
+
+`settings.mediaMode = 'manual'` mematikan Higgsfield: tombol generate disembunyikan, kunci Higgsfield tidak diwajibkan, dan
+pengguna membuat gambar atau video di aplikasi lain (Google Flow, Gemini, ChatGPT, ...).
+
+- `manualPrompt(target)` memakai pembuat prompt yang sama dengan Higgsfield (`clipPrompt`, `sheetPrompt`,
+  `defaultVideoPrompt` di `generation.ts`), tanpa batas panjang, plus petunjuk apa yang harus dilampirkan.
+- `importPath`/`importBytes`/`importDialog`/`importFolder` menyalin file ke folder proyek, memeriksanya dengan ffprobe,
+  menyimpannya sebagai aset `provider: 'manual'`, lalu menautkannya lewat `linkAsset` (dipakai juga oleh hasil
+  Higgsfield, jadi keadaan akhirnya sama). File yang ditolak dihapus lagi.
+- Impor folder mencocokkan file ke klip lewat angka pertama di nama file (`scene-03.png` → klip 3); tanpa angka,
+  file diambil berurutan menurut nama.
+- Renderer: `pages/project/ManualMedia.tsx` (tombol, Ctrl+V, seret-lepas). Jalur file hasil seret memakai
+  `webUtils.getPathForFile` di preload; gambar dari clipboard dikirim sebagai bytes.
 
 ### Katalog model (`src/shared/higgsfield-catalog.json`)
 

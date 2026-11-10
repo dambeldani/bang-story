@@ -19,6 +19,7 @@ import { AutoTextarea } from '../../../components/AutoTextarea'
 import { Button, Segmented, Switch, cx, inputCls } from '../../../components/ui'
 import { clipNumber, errorText, secLabel, timecode } from '../../../lib/format'
 import { useApp } from '../../../store/app'
+import { useMediaMode } from '../../../lib/useMediaMode'
 import { useNarration } from '../../../lib/useNarration'
 import { isRunning, jobFor, useProject } from '../../../store/project'
 import { UNKNOWN_AUDIO_MS, useAudition, useCaptionUi, useTimeline } from './engine'
@@ -67,6 +68,11 @@ function ClipTab({ clip, index }: { clip: Clip; index: number }) {
   const image = clip.imageAssetId ? assets[clip.imageAssetId] : null
   const video = clip.videoAssetId ? assets[clip.videoAssetId] : null
   const videoJob = jobFor(jobs, 'video', { clipId: clip.id })
+  const mode = useMediaMode()
+  // By hand, videos are loaded in the storyboard; here nothing may call a generator that is switched off.
+  const canMakeVideo = mode !== 'manual'
+  const fromText = mode === 'flow' && clip.videoSource === 'text'
+  const videoVia = video?.provider === 'flow' ? 'Google Flow' : video?.provider === 'higgsfield' ? 'Higgsfield' : video?.provider === 'manual' ? 'file yang kamu muat' : 'AI'
   const videoCamera = clip.videoCamera ?? 'static'
   // A camera change plays the clip in the preview at once, without moving the playhead.
   const audition = (): void => useAudition.getState().start({ kind: 'clip', clipId: clip.id })
@@ -89,21 +95,25 @@ function ClipTab({ clip, index }: { clip: Clip; index: number }) {
       {clip.motionType === 'video' ? (
         <Section title="Video AI">
           {video ? (
-            <p className="text-[13px] text-ink-2">Klip ini memakai video dari Higgsfield.</p>
+            <p className="text-[13px] text-ink-2">Klip ini memakai video dari {videoVia}.</p>
           ) : (
-            <p className="text-[13px] text-ink-2">Video belum dibuat. Sampai video siap, pratinjau memakai gambar diam.</p>
+            <p className="text-[13px] text-ink-2">
+              {canMakeVideo ? 'Video belum dibuat.' : 'Video belum dimuat. Buat di aplikasi lain, lalu muat lewat Storyboard.'} Sampai video siap, pratinjau memakai gambar diam.
+            </p>
           )}
           <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              variant={video ? 'secondary' : 'accent'}
-              icon={<Clapperboard className="size-4" />}
-              loading={isRunning(videoJob)}
-              disabled={!image}
-              onClick={() => void run(() => window.api.generate.clipVideo(clip.id))}
-            >
-              {video ? 'Buat ulang video' : 'Buat video'}
-            </Button>
+            {canMakeVideo && (
+              <Button
+                size="sm"
+                variant={video ? 'secondary' : 'accent'}
+                icon={<Clapperboard className="size-4" />}
+                loading={isRunning(videoJob)}
+                disabled={!image && !fromText}
+                onClick={() => void run(() => window.api.generate.clipVideo(clip.id))}
+              >
+                {video ? 'Buat ulang video' : 'Buat video'}
+              </Button>
+            )}
             <Button size="sm" icon={<Move className="size-4" />} onClick={() => updateClip(clip.id, { motionType: 'camera' })}>
               Kembali ke gerak kamera
             </Button>
@@ -168,7 +178,7 @@ function ClipTab({ clip, index }: { clip: Clip; index: number }) {
               disabled={!image}
               onClick={() => {
                 updateClip(clip.id, { motionType: 'video' })
-                if (!video) void run(() => window.api.generate.clipVideo(clip.id))
+                if (!video && canMakeVideo) void run(() => window.api.generate.clipVideo(clip.id))
               }}
             >
               Jadikan video AI

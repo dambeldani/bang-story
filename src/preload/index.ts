@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import { EVENTS, type StudioApi } from '../shared/api'
 
 const call =
@@ -49,7 +49,19 @@ const api: StudioApi = {
     setActive: call('assets:setActive'),
     setWords: call('assets:setWords'),
     pickMusic: call('assets:pickMusic'),
-    pickImage: call('assets:pickImage')
+    pickImage: call('assets:pickImage'),
+    reveal: call('assets:reveal')
+  },
+  flow: {
+    test: call('flow:test')
+  },
+  manual: {
+    prompt: call('manual:prompt'),
+    importDialog: call('manual:importDialog'),
+    importPath: call('manual:importPath'),
+    importBytes: call('manual:importBytes'),
+    importFolder: call('manual:importFolder'),
+    pathFor: (file: File) => webUtils.getPathForFile(file)
   },
   settings: {
     get: call('settings:get'),

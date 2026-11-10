@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowRight, Copy, FolderOpen, MoreHorizontal, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
-import { DURATIONS, LANGUAGES, llmName } from '@shared/models'
+import { DURATIONS, LANGUAGES, isCliProvider, llmName } from '@shared/models'
 import { getStyle } from '@shared/styles'
 import type { ApiProvider, AppSettings, AspectRatio, KeyStatus, ProjectStatus, ProjectSummary, TtsProvider } from '@shared/types'
 import { Logo } from '../components/Logo'
@@ -96,10 +96,10 @@ export function Home() {
       return !!k?.configured && k.lastOk !== false
     }
     const issues: { what: string; blocks: string }[] = []
-    if (!ok('higgsfield')) issues.push({ what: 'kunci Higgsfield', blocks: 'gambar' })
+    if (appSettings.mediaMode === 'higgsfield' && !ok('higgsfield')) issues.push({ what: 'kunci Higgsfield', blocks: 'gambar' })
     const llm = appSettings.llmProvider
-    if (!ok(llm)) issues.push({ what: `kunci ${llmName(llm)}`, blocks: 'cerita' })
-    else if (!appSettings.llmModels[llm]) issues.push({ what: `model ${llmName(llm)}`, blocks: 'cerita' })
+    if (!ok(llm)) issues.push({ what: isCliProvider(llm) ? llmName(llm) : `kunci ${llmName(llm)}`, blocks: 'cerita' })
+    else if (llm !== 'claude-cli' && !appSettings.llmModels[llm]) issues.push({ what: `model ${llmName(llm)}`, blocks: 'cerita' })
     // Narration needs just one working voice service; every project can pick either one.
     const tts = ttsReadiness(keys)
     if (!tts.gemini.ok && !tts.elevenlabs.ok) issues.push({ what: 'kunci Gemini atau ElevenLabs', blocks: 'suara narator' })

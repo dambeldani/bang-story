@@ -58,3 +58,12 @@ export async function probeSize(absPath: string): Promise<{ width: number; heigh
   const info = await probe(absPath)
   return info.width && info.height ? { width: info.width, height: info.height } : null
 }
+
+/** Saves the first frame of a video as a PNG, for clips made from text that have no picture of their own. */
+export function grabFirstFrame(videoPath: string, outPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(binPath(ffmpegStatic!), ['-y', '-hide_banner', '-loglevel', 'error', '-i', videoPath, '-frames:v', '1', outPath], { windowsHide: true }, (err, _o, stderr) =>
+      err ? reject(new Error(`Frame pertama video tidak bisa diambil: ${stderr || err.message}`)) : resolve()
+    )
+  })
+}

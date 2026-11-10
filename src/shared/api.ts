@@ -3,6 +3,7 @@ import type {
   AspectRatio,
   AppSettings,
   Asset,
+  BatchImportResult,
   CharacterPatchEvent,
   ClipPatchEvent,
   CreditEstimate,
@@ -12,6 +13,8 @@ import type {
   Job,
   KeyStatus,
   KeyTestResult,
+  ManualPrompt,
+  ManualTarget,
   ModelList,
   ModelSource,
   MusicPrompt,
@@ -71,6 +74,25 @@ export interface StudioApi {
     pickMusic(projectId: string): Promise<Asset | null>
     /** A logo or watermark image for an overlay. */
     pickImage(projectId: string): Promise<Asset | null>
+    /** Shows the stored file in the system file manager. */
+    reveal(assetId: string): Promise<void>
+  }
+  flow: {
+    /** Checks that flow-mcp runs and Flow is signed in with a project open. */
+    test(): Promise<KeyTestResult>
+  }
+  manual: {
+    /** The prompt to paste into another app, plus what to attach to it. */
+    prompt(target: ManualTarget): Promise<ManualPrompt>
+    /** Asks for a file, then makes it the picture, video or character sheet of the target. Null when cancelled. */
+    importDialog(target: ManualTarget): Promise<Asset | null>
+    importPath(target: ManualTarget, path: string): Promise<Asset>
+    /** A pasted or dragged image that has no file on disk. */
+    importBytes(target: ManualTarget, data: Uint8Array, ext: string): Promise<Asset>
+    /** Loads a folder; scene numbers in the file names pick the clips. Null when cancelled. */
+    importFolder(projectId: string, kind: 'image' | 'video'): Promise<BatchImportResult | null>
+    /** The real path of a dropped file (the renderer cannot read it from the File object). */
+    pathFor(file: File): string
   }
   settings: {
     get(): Promise<AppSettings>

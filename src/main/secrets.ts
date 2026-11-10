@@ -1,9 +1,10 @@
 import { safeStorage } from 'electron'
 import type { ApiProvider, KeyStatus } from '@shared/types'
 import { getDb } from './db'
+import { cliInstalled } from './services/cli'
 import { getSettings } from './settings'
 
-const PROVIDERS: ApiProvider[] = ['higgsfield', 'gemini', 'elevenlabs', 'openrouter', 'groq', 'custom']
+const PROVIDERS: ApiProvider[] = ['higgsfield', 'gemini', 'elevenlabs', 'openrouter', 'groq', 'custom', 'claude-cli', 'codex-cli']
 
 export const PROVIDER_NAMES: Record<ApiProvider, string> = {
   higgsfield: 'Higgsfield',
@@ -11,7 +12,9 @@ export const PROVIDER_NAMES: Record<ApiProvider, string> = {
   elevenlabs: 'ElevenLabs',
   openrouter: 'OpenRouter',
   groq: 'Groq',
-  custom: 'endpoint custom'
+  custom: 'endpoint custom',
+  'claude-cli': 'Claude Code',
+  'codex-cli': 'Codex'
 }
 
 interface SecretRow {
@@ -95,7 +98,7 @@ export function recordCheck(provider: ApiProvider, ok: boolean, message: string)
   const res = getDb()
     .prepare('UPDATE secrets SET last_ok = ?, last_message = ?, checked_at = ? WHERE provider = ?')
     .run(ok ? 1 : 0, message, now, provider)
-  if (res.changes === 0 && provider === 'custom') {
+  if (res.changes === 0 && (provider === 'custom' || provider === 'claude-cli' || provider === 'codex-cli')) {
     getDb()
       .prepare('INSERT INTO secrets (provider, value, last_ok, last_message, checked_at) VALUES (?, ?, ?, ?, ?)')
       .run(provider, Buffer.alloc(0), ok ? 1 : 0, message, now)
@@ -112,7 +115,8 @@ export function keyStatuses(): KeyStatus[] {
     const unreadable = hasKey && value == null
     return {
       provider,
-      configured: provider === 'custom' ? !!customUrl : hasKey,
+      // Local CLIs and the custom endpoint have no key; being installed (or having a URL) is what "set up" means.
+      configured: provider === 'custom' ? !!customUrl : provider === 'claude-cli' ? cliInstalled('claude') : provider === 'codex-cli' ? cliInstalled('codex') : hasKey,
       lastOk: unreadable ? false : r?.last_ok == null ? null : r.last_ok === 1,
       lastMessage: unreadable ? 'Kunci tersimpan tapi tidak bisa dibuka lagi. Masukkan ulang kuncinya.' : (r?.last_message ?? null),
       checkedAt: r?.checked_at ?? null,

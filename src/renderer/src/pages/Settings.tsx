@@ -17,7 +17,7 @@ import {
   Trash2
 } from 'lucide-react'
 import { HF_IMAGE_MODELS, HF_VIDEO_MODELS } from '@shared/higgsfield'
-import { LANGUAGES, LLM_PROVIDERS } from '@shared/models'
+import { LANGUAGES, LLM_PROVIDERS, isCliProvider } from '@shared/models'
 import type { ApiProvider, AppSettings, KeyStatus, KeyTestResult, LlmProvider, TtsProvider } from '@shared/types'
 import { Logo } from '../components/Logo'
 import { ModelPicker } from '../components/ModelPicker'
@@ -25,9 +25,10 @@ import { ProviderLogo, type ProviderLogoId } from '../components/ProviderLogo'
 import { Select } from '../components/Select'
 import { AboutSection } from './AboutSection'
 import { WhisperSection } from './WhisperSection'
-import { Badge, Button, Field, IconButton, confirmDialog, cx, inputCls } from '../components/ui'
+import { Badge, Button, Field, IconButton, Segmented, confirmDialog, cx, inputCls } from '../components/ui'
 import { errorText, relativeTime } from '../lib/format'
 import { useModels } from '../lib/useModels'
+import { rememberMediaMode } from '../lib/useMediaMode'
 import { useApp } from '../store/app'
 
 type Tab = 'services' | 'general' | 'about'
@@ -121,6 +122,47 @@ function ProviderSelect<T extends string>({ value, options, onChange }: { value:
           })}
         </div>
       )}
+    </div>
+  )
+}
+
+/** Local CLI providers have no key: this card only shows whether the program is found and lets the user test the login. */
+function CliForm({ name, status, help, link, linkLabel, provider, onChanged, onSaved }: { name: string; status?: KeyStatus; help: string; link: string | null; linkLabel: string; provider: 'claude-cli' | 'codex-cli'; onChanged: () => void; onSaved?: (r: KeyTestResult) => void }) {
+  const { toast } = useApp()
+  const [busy, setBusy] = useState(false)
+  const installed = !!status?.configured
+  const test = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const r = await window.api.settings.testKey(provider)
+      toast(r.ok ? 'success' : 'error', `${name}: ${r.message}`)
+      onChanged()
+      onSaved?.(r)
+    } catch (e) {
+      toast('error', errorText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="text-sm font-semibold">{installed ? `${name} terdeteksi di komputer ini` : `${name} belum terdeteksi`}</span>
+          <span className="text-[13px] text-ink-2">{status?.lastMessage ?? help}</span>
+        </div>
+        <Button variant="accent" className="h-11" loading={busy} onClick={() => void test()}>
+          {installed ? 'Tes koneksi' : 'Cari lagi dan tes'}
+        </Button>
+      </div>
+      <p className="text-[13px] text-muted">
+        {help}{' '}
+        {link && (
+          <a href={link} target="_blank" rel="noreferrer" className="font-semibold text-accent underline">
+            {linkLabel}
+          </a>
+        )}
+      </p>
     </div>
   )
 }
@@ -396,6 +438,21 @@ function LlmSection({ settings, statusOf, onChanged, onSettings }: { settings: A
         }}
       />
       <Card key={provider}>
+        {isCliProvider(provider) ? (
+          <CliForm
+            provider={provider}
+            name={spec.name}
+            status={status}
+            help="Kalau aplikasi ini memakai CLI-mu, pemakaian dihitung dari langganan atau akun CLI itu. Tidak ada kunci yang disimpan di sini."
+            link={spec.link}
+            linkLabel={spec.linkLabel}
+            onChanged={onChanged}
+            onSaved={async (r) => {
+              if (!r.ok) return
+              await models.refresh()
+            }}
+          />
+        ) : (
         <KeyForm
           provider={provider}
           name={spec.name}
@@ -413,6 +470,7 @@ function LlmSection({ settings, statusOf, onChanged, onSettings }: { settings: A
             if (!model) setOpenPicker(true)
           }}
         />
+        )}
         {configured && status?.lastOk !== false && (
           <div className="flex flex-col gap-1.5 border-t border-dashed border-line pt-4">
             <span className="text-sm font-semibold">Model untuk menyusun cerita</span>
@@ -428,9 +486,9 @@ function LlmSection({ settings, statusOf, onChanged, onSettings }: { settings: A
                 toast('success', `Cerita akan disusun oleh ${spec.name} · ${id}`)
               }}
               onRefresh={() => void models.refresh()}
-              allowCustom={provider === 'custom'}
+              allowCustom={provider === 'custom' || provider === 'codex-cli'}
               defaultOpen={openPicker}
-              placeholder="Pilih model dari daftar"
+              placeholder={provider === 'claude-cli' ? 'Bawaan Claude Code (atau pilih model)' : 'Pilih model dari daftar'}
             />
             {selected?.description && <p className="line-clamp-2 text-[13px] text-muted">{selected.description}</p>}
             {selected && provider === 'openrouter' && !selected.tags.includes('JSON') && (
@@ -506,10 +564,109 @@ function TtsSection({ settings, statusOf, onChanged, onSettings }: { settings: A
   )
 }
 
-function HiggsfieldSection({ status, onChanged }: { status?: KeyStatus; onChanged: () => void }) {
+/** Setup and a connection test for Google Flow through flow-mcp, which runs on the user's own computer. */
+function FlowCard({ settings, onSettings }: { settings: AppSettings; onSettings: (s: AppSettings) => void }) {
+  const { toast } = useApp()
+  const [busy, setBusy] = useState(false)
+  const [model, setModel] = useState(settings.flowVideoModel)
+  const [cap, setCap] = useState(String(settings.flowMaxCredits))
+  const saveVideo = async (): Promise<void> => {
+    const flowMaxCredits = Math.max(0, Math.round(Number(cap) || 0))
+    setCap(String(flowMaxCredits))
+    onSettings(await window.api.settings.set({ flowVideoModel: model.trim(), flowMaxCredits }))
+  }
+  const [result, setResult] = useState<KeyTestResult | null>(null)
+  const test = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const r = await window.api.flow.test()
+      setResult(r)
+      toast(r.ok ? 'success' : 'error', `Google Flow: ${r.message}`)
+    } catch (e) {
+      toast('error', errorText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Card>
+      <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="text-sm font-semibold">{result ? (result.ok ? 'Flow tersambung' : 'Flow belum siap') : 'Belum dites'}</span>
+          <span className="text-[13px] text-ink-2">{result?.message ?? 'Pasang dan jalankan flow-mcp dulu (langkah di bawah), lalu tes koneksinya.'}</span>
+        </div>
+        <Button variant="accent" className="h-11" loading={busy} onClick={() => void test()}>
+          Tes koneksi
+        </Button>
+      </div>
+      <ol className="list-decimal space-y-1.5 border-t border-dashed border-line pl-5 pt-4 text-[13px] leading-relaxed text-ink-2">
+        <li>
+          Pasang <strong className="text-ink">flow-mcp</strong> (butuh Node.js 22+ dan Google Chrome):{' '}
+          <button type="button" onClick={() => void window.api.app.openExternal('https://github.com/GTAI-1/flow-mcp')} className="font-semibold text-accent underline">
+            github.com/GTAI-1/flow-mcp
+          </button>
+          . Baca kodenya dulu, karena program ini mengendalikan Chrome yang login ke akun Googlemu.
+        </li>
+        <li>
+          Di folder flow-mcp jalankan <code className="rounded bg-sand px-1 font-mono text-xs">npm run login</code> dan masuk ke Google di jendela Chrome yang terbuka.
+        </li>
+        <li>
+          Jalankan <code className="rounded bg-sand px-1 font-mono text-xs">npm run studio</code> dan biarkan tetap terbuka, lengkap dengan jendela Chromenya. Buka satu proyek di Flow.
+        </li>
+        <li>Klik Tes koneksi di sini. Gambar dibuat satu per satu dengan jeda, jadi banyak klip butuh waktu.</li>
+      </ol>
+      <div className="grid grid-cols-[minmax(0,1fr)_200px] gap-3 border-t border-dashed border-line pt-4">
+        <Field label="Model video Flow (opsional)" hint="Tulis persis seperti di Flow, misalnya Veo 3.1 - Fast. Kosong berarti model yang sedang dipilih di Flow. Model Omni juga mengatur lama video.">
+          <input value={model} onChange={(e) => setModel(e.target.value)} onBlur={() => void saveVideo()} placeholder="Kosong = model Flow saat ini" spellCheck={false} className={cx(inputCls, 'h-11 text-sm')} />
+        </Field>
+        <Field label="Batas kredit per video" hint="Video yang dihargai lebih mahal dilewati.">
+          <input value={cap} onChange={(e) => setCap(e.target.value.replace(/\D/g, ''))} onBlur={() => void saveVideo()} inputMode="numeric" className={cx(inputCls, 'h-11 text-sm')} />
+        </Field>
+      </div>
+      <p className="text-[13px] text-muted">
+        Gambar tidak memakai kredit Flow, sedangkan video memakai kredit sesuai model yang dipilih. Otomatisasi ini bisa rusak kalau Google mengubah Flow, dan mungkin melanggar ketentuan layanan Google.
+        Pakai di akunmu sendiri dengan risiko sendiri.
+      </p>
+    </Card>
+  )
+}
+
+function HiggsfieldSection({ settings, status, onChanged, onSettings }: { settings: AppSettings; status?: KeyStatus; onChanged: () => void; onSettings: (s: AppSettings) => void }) {
+  const manual = settings.mediaMode === 'manual'
+  const flowMode = settings.mediaMode === 'flow'
   return (
     <>
-      <SectionTitle icon={<ImageIcon className="size-5" />} title="Gambar dan video" sub="Higgsfield membuat gambar klip, lembar karakter, dan video AI." />
+      <SectionTitle
+        icon={<ImageIcon className="size-5" />}
+        title="Gambar dan video"
+        sub={manual ? 'Kamu membuat gambar dan video sendiri di aplikasi lain, lalu memuatnya ke storyboard.' : flowMode ? 'Google Flow membuat gambar klip dan lembar karakter lewat flow-mcp di komputermu.' : 'Higgsfield membuat gambar klip, lembar karakter, dan video AI.'}
+      />
+      <Segmented
+        value={settings.mediaMode}
+        onChange={async (mediaMode) => {
+          rememberMediaMode(mediaMode)
+          onSettings(await window.api.settings.set({ mediaMode }))
+        }}
+        options={[
+          { id: 'higgsfield', label: 'Higgsfield (otomatis)' },
+          { id: 'flow', label: 'Google Flow (flow-mcp)' },
+          { id: 'manual', label: 'Manual (aplikasi lain)' }
+        ]}
+        className="self-start"
+      />
+      {settings.mediaMode === 'flow' ? (
+        <FlowCard settings={settings} onSettings={onSettings} />
+      ) : manual ? (
+        <Card>
+          <p className="text-[14px] leading-relaxed text-ink-2">
+            Di storyboard, tiap klip dan pemeran punya tombol <strong className="text-ink">Salin prompt</strong>. Tempel prompt itu di Google Flow, Gemini, ChatGPT,
+            atau aplikasi pembuat gambar lain yang kamu pakai. Setelah jadi, <strong className="text-ink">muat filenya</strong> lewat tombol, tempel dengan Ctrl+V, atau seret
+            ke klip. Banyak file sekaligus bisa dimuat dari satu folder: beri nama dengan nomor adegan, misalnya{' '}
+            <code className="rounded bg-sand px-1 font-mono text-xs">scene-03.png</code>.
+          </p>
+          <p className="text-[13px] text-muted">Tidak perlu kunci API, dan tidak ada kredit yang terpakai. Pengeditan, suara, caption, dan ekspor tetap di Bang Story.</p>
+        </Card>
+      ) : (
       <Card>
         <div className="flex items-center gap-3">
           <ProviderLogo id="higgsfield" />
@@ -544,6 +701,7 @@ function HiggsfieldSection({ status, onChanged }: { status?: KeyStatus; onChange
           </span>
         </p>
       </Card>
+      )}
     </>
   )
 }
@@ -617,7 +775,7 @@ export function Settings() {
                 </div>
                 <LlmSection settings={settings} statusOf={statusOf} onChanged={reload} onSettings={setSettings} />
                 <TtsSection settings={settings} statusOf={statusOf} onChanged={reload} onSettings={setSettings} />
-                <HiggsfieldSection status={statusOf('higgsfield')} onChanged={reload} />
+                <HiggsfieldSection settings={settings} status={statusOf('higgsfield')} onChanged={reload} onSettings={setSettings} />
                 <WhisperSection settings={settings} onSettings={setSettings} />
               </>
             )}
